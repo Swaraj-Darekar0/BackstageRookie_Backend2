@@ -1,0 +1,13 @@
+flask
+flask-cors
+requests
+python-dotenv
+pandas
+numpy
+python-docx
+pypandoc
+gitpython
+google-generativeai
+bandit
+pip-audit
+google-auth
