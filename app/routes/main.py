@@ -228,7 +228,11 @@ def get_user_profile():
         return jsonify(user_profile)
     except ValueError as e:
         return jsonify({"error": "Invalid ID token", "message": str(e)}), 401
-
+        
+@main_bp.route('/healthz')
+def health_check():
+    """Health check endpoint for Render."""
+    return jsonify({"status": "healthy"}), 200
 
 @main_bp.route('/api/models', methods=['GET'])
 @login_required
