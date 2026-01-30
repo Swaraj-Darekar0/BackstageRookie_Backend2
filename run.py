@@ -6,4 +6,5 @@ app = create_app()
 if __name__ == '__main__':
     # debug=True enables auto-reloading and is for development only.
     # Do not use debug=True in a production environment.
-    app.run(debug=False, port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(debug=False, host='0.0.0.0', port=port)
