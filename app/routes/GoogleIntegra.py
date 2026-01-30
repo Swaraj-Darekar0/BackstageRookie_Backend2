@@ -1,5 +1,5 @@
 import os
-from flask import Blueprint, session, redirect, request, jsonify
+from flask import Blueprint, session, redirect, request, jsonify, url_for
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from flask_cors import CORS
@@ -7,7 +7,8 @@ from flask_cors import CORS
 
 google_auth_bp = Blueprint("google_auth", __name__)
 
-CLIENT_SECRETS_FILE = "client_secret.json"
+CLIENT_SECRETS_FILE = os.path.join(os.path.dirname(__file__), "client_secret.json")
+
 
 SCOPES = [
     "openid",
@@ -15,7 +16,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile",
     "https://www.googleapis.com/auth/generative-language.peruserquota",
     "https://www.googleapis.com/auth/generative-language.retriever",
-    "https://www.googleapis.com/auth/drive.readonly"  # Added for debugging token refresh
+    "https://www.googleapis.com/auth/drive.readonly" 
 ]
 
 @google_auth_bp.route("/api/auth/google/login")
@@ -23,13 +24,14 @@ def google_login():
     # Force clear any existing session to ensure a fresh login
     session.clear()
     
+    redirect_uri = url_for('google_auth.google_callback', _external=True)
+
     flow = Flow.from_client_secrets_file(
         CLIENT_SECRETS_FILE,
         scopes=SCOPES,
-        redirect_uri="http://localhost:5000/api/auth/google/callback"
+        redirect_uri=redirect_uri
     )
 
-    # Use offline access and consent prompt to ensure account selection
     auth_url, state = flow.authorization_url(
         prompt="consent",
         access_type='offline',
@@ -42,11 +44,13 @@ def google_login():
 
 @google_auth_bp.route("/api/auth/google/callback")
 def google_callback():
+    redirect_uri = url_for('google_auth.google_callback', _external=True)
+    
     flow = Flow.from_client_secrets_file(
         CLIENT_SECRETS_FILE,
         scopes=SCOPES,
         state=session["state"],
-        redirect_uri=" https://backstagerookie-backend2.onrender.com/api/auth/google/callback"
+        redirect_uri=redirect_uri
     )
 
     flow.fetch_token(authorization_response=request.url)
@@ -75,22 +79,5 @@ def get_google_session():
     return jsonify({
         "access_token": token
     })
-
-
-
-# @app.route('/ask')
-# def ask_gemini():
-#     if 'credentials' not in flask.session:
-#         return flask.redirect('/login')
-
-#     # Load credentials from session to authenticate the Gemini client
-#     creds = Credentials(**flask.session['credentials'])
-    
-#     # Configure the Gemini API with the USER'S token
-#     genai.configure(credentials=creds)
-#     model = genai.GenerativeModel('gemini-1.5-flash')
-    
-#     response = model.generate_content("Give me a one-sentence tip for web development.")
-#     return f"Gemini response using your account: {response.text}"
 
 
