@@ -46,7 +46,7 @@ def google_callback():
         CLIENT_SECRETS_FILE,
         scopes=SCOPES,
         state=session["state"],
-        redirect_uri="http://localhost:5000/api/auth/google/callback"
+        redirect_uri=" https://backstagerookie-backend2.onrender.com/api/auth/google/callback"
     )
 
     flow.fetch_token(authorization_response=request.url)
