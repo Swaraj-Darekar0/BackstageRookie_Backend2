@@ -17,8 +17,12 @@ def create_app():
     app.config['PULLED_CODE_DIR'] = os.path.join(project_root, 'PulledCode_temp')
     app.config['DATA_DIR'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
     app.config['TEMPLATES_DIR'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates')
-
-    CORS(app, supports_credentials=True, origins=["http://localhost:3000", "https://backstage-rookie-frontend.vercel.app"])
+    
+        # Configuration for cross-domain session cookie
+    app.config['SESSION_COOKIE_SAMESITE'] = 'None'
+    app.config['SESSION_COOKIE_SECURE'] = True
+    
+    CORS(app, supports_credentials=True, origins=["https://backstage-rookie-frontend.vercel.app","http://localhost:3000"])
     # Register blueprints
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
     from app.routes.GoogleIntegra import google_auth_bp
