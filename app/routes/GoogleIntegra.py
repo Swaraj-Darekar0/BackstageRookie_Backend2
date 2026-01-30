@@ -67,7 +67,7 @@ def google_callback():
 
 
     #  IMPORTANT: redirect to FRONTEND
-    return redirect("http://localhost:3000/oauth/callback")
+    return redirect("https://backstage-rookie-frontend.vercel.app/oauth/callback")
 
 @google_auth_bp.route("/api/auth/google/session", methods=["GET"])
 def get_google_session():
