@@ -18,7 +18,7 @@ def create_app():
     app.config['DATA_DIR'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
     app.config['TEMPLATES_DIR'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates')
 
-    CORS(app, supports_credentials=True, origins=["http://localhost:3000"])
+    CORS(app, supports_credentials=True, origins=["http://localhost:3000", "https://backstage-rookie-frontend.vercel.app"])
     # Register blueprints
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
     from app.routes.GoogleIntegra import google_auth_bp
