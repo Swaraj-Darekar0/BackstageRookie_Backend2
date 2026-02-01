@@ -6,6 +6,7 @@ from flask import current_app
 from docx import Document
 from datetime import datetime
 from google.oauth2.credentials import Credentials
+import pypandoc
 
 class ReportService:
     def __init__(self):
@@ -236,28 +237,38 @@ class ReportService:
         return text.strip()
     
     def _format_and_save_report(self, content, scan_id, report_type):
-        """Format report content and save as document"""
-        # Create reports directory if it doesn't exist
+        """
+        Formats report content and saves as a DOCX document using Pandoc.
+        Falls back to a basic formatter if Pandoc is not found.
+        """
         reports_dir = os.path.join(self.data_dir, 'generated_reports')
         os.makedirs(reports_dir, exist_ok=True)
         
-        # Generate filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{report_type}_{scan_id}_{timestamp}.docx"
         report_path = os.path.join(reports_dir, filename)
         
-        # Create Word document
-        content = self._clean_content(content) # Clean the text first
+        content = self._clean_content(content)
+
+        try:
+            # Use pypandoc to convert Markdown to DOCX
+            pypandoc.convert_text(content, 'docx', format='md', outputfile=report_path)
+            print(f"[ReportService] Successfully created DOCX report using Pandoc: {report_path}")
+        except FileNotFoundError:
+            print("[ReportService] WARNING: 'pandoc' not found. Falling back to basic formatting.")
+            print("For professional reports, please install pandoc on your system.")
+            self._format_and_save_report_basic(content, report_path)
+            
+        return report_path
+
+    def _format_and_save_report_basic(self, content, report_path):
+        """Basic fallback formatter using python-docx."""
         doc = Document()
-        
-        # Add a professional Header
         section = doc.sections[0]
         header = section.header
-        header.paragraphs[0].text = f"Security Analysis Report - ID: {scan_id}"
+        header.paragraphs[0].text = "Security Analysis Report"
         
-        # Add Title
-        doc.add_heading(f'Security {report_type.replace("_", " ").title()} Report', 0)
-        doc.add_paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        doc.add_heading('Security Report', 0)
 
         paragraphs = content.split('\n\n')
         for paragraph in paragraphs:
@@ -269,7 +280,6 @@ class ReportService:
                 text = paragraph.replace('#', '').strip()
                 doc.add_heading(text, level)
             elif '**' in paragraph:
-                # Basic bold text support
                 p = doc.add_paragraph()
                 parts = re.split(r'(\*\*.*?\*\*)', paragraph)
                 for part in parts:
@@ -281,4 +291,3 @@ class ReportService:
                 doc.add_paragraph(paragraph)
 
         doc.save(report_path)
-        return report_path
