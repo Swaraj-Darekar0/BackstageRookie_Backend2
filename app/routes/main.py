@@ -1,30 +1,36 @@
-from flask import Blueprint, send_file, session, current_app
-# ### NEW IMPORTS for Celery ###
-from celery_app import celery
-from app.tasks import run_analysis_task, generate_report_task
-# ###############################
-from app.services.github_service import GitHubService
-from app.services.analysis_service import AnalysisService
-from app.services.report_service import ReportService
 import os
 import json
 import uuid
 import shutil
-import stat # stat is only used by _remove_readonly_onerror, which is being moved
+import stat
+from functools import wraps
+
+from flask import Blueprint, send_file, session, current_app, request, jsonify
 from google.oauth2 import id_token
 from google.oauth2.credentials import Credentials
-import google.generativeai as genai
 from google.auth.transport import requests as google_requests
+import google.generativeai as genai
 
-from functools import wraps
-from flask import request, jsonify
-
-
+from app.services.github_service import GitHubService
+from app.services.analysis_service import AnalysisService
+from app.services.report_service import ReportService
+from app.services.django_info_service import extract_django_endpoints
+from app.services.flaskFastApi_info_service import extract_flask_fastapi_endpoints
 main_bp = Blueprint('main', __name__)
-
 
 # Global variable to store current plan (in production, use database)
 CURRENT_PLAN = 'basic'  # Default plan
+
+
+def _remove_readonly_onerror(func, path, _):
+    """
+    Error handler for `shutil.rmtree`.
+    If the error is due to an access error (read-only file), it attempts to
+    add write permission and then retries the operation.
+    """
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
 
 def login_required(f):
     @wraps(f)
@@ -49,25 +55,22 @@ def login_required(f):
 def change_plan():
     """Change analysis plan configuration"""
     global CURRENT_PLAN
-    
     try:
         data = request.get_json()
         new_plan = data.get('plan')
-        
+
         if new_plan not in ['basic', 'full']:
             return jsonify({'status': 'error', 'message': 'Invalid plan'}), 400
-        
+
         # Update global plan
         CURRENT_PLAN = new_plan
-        
         print(f"[/api/change-plan] Plan changed to: {new_plan}")
-        
+
         return jsonify({
             'status': 'success',
             'plan': new_plan,
             'message': f'Plan changed to {new_plan}'
         })
-    
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
@@ -90,9 +93,6 @@ def get_plan():
     })
 
 
-# Removed _remove_readonly_onerror as it is now part of the Celery task
-
-
 @main_bp.route('/api/analyze', methods=['POST'])
 @login_required
 def analyze_repository():
@@ -107,39 +107,93 @@ def analyze_repository():
     sector_hint = data.get('sector_hint') or 'General Data Privacy'
     framework_hint = data.get('backend_framework', '').lower()
     plan = data.get('plan', CURRENT_PLAN)
+    scan_id = str(uuid.uuid4())
+    repo_name = github_url.split('/')[-1].replace('.git', '')
+    repo_path = os.path.join(current_app.config['PULLED_CODE_DIR'], scan_id, repo_name)
     user_token = session.get('google_access_token')
 
-    if not user_token:
-        return jsonify({"error": "Unauthorized: User token not found in session."}), 401
-
     try:
-        print(f"[/api/analyze] Dispatching analysis task for URL: {github_url}")
-        task = run_analysis_task.delay(github_url, sector_hint, framework_hint, plan, user_token)
-        return jsonify({'status': 'accepted', 'task_id': task.id, 'message': 'Analysis started in background.'}), 202
+        print(f"[/api/analyze] Received request for scan {scan_id}")
+        print(f"[/api/analyze] URL: {github_url}, Sector: {sector_hint}, Framework: {framework_hint}, Plan: {plan}")
+        
+        print(f"[/api/analyze] Phase 1: Cloning repository into isolated path: {repo_path}")
+        github_service = GitHubService()
+        github_service.clone_repository(github_url, repo_path)
+        
+        print(f"[/api/analyze] Phase 2: Starting codebase analysis with plan: {plan}...")
+        analysis_service = AnalysisService(plan=plan)
+        scan_results = analysis_service.analyze_codebase(repo_path, sector_hint, scan_id)
+        
+        framework_analysis_results = None
+        if framework_hint:
+            print(f"[/api/analyze] Starting framework analysis for: {framework_hint}")
+            try:
+                # Assuming these functions are imported or defined elsewhere
+                if framework_hint == 'django':
+                    framework_analysis_results = extract_django_endpoints(
+                        repo_path=repo_path, 
+                        user_token=user_token, 
+                        sector=sector_hint
+                    )
+                elif framework_hint in ['flask', 'fastapi']:
+                    framework_analysis_results = extract_flask_fastapi_endpoints(
+                        repo_path=repo_path, 
+                        user_token=user_token, 
+                        sector=sector_hint
+                    )
+                
+                if framework_analysis_results:
+                    filename = f"{scan_id}_EndpointAnalysis.json"
+                    save_path = os.path.join(current_app.config['DATA_DIR'], "scanned_results", filename)
+                    with open(save_path, 'w') as f:
+                        json.dump(framework_analysis_results, f, indent=2)
+                    print(f"[/api/analyze] Successfully saved framework analysis to {save_path}")
+
+            except Exception as fw_e:
+                print(f"[/api/analyze] Framework analysis failed: {str(fw_e)}")
+                framework_analysis_results = {"error": str(fw_e)}
+
+        return jsonify({
+            'status': 'success',
+            'scan_id': scan_results['scan_id'],
+            'plan_used': plan,
+            'total_findings': scan_results['summary']['total_findings'],
+            'framework_analysis': framework_analysis_results, 
+            'message': f'Analysis completed successfully using {plan} plan'
+        })
     except Exception as e:
-        print(f"[/api/analyze] ERROR dispatching analysis task: {str(e)}")
-        return jsonify({'status': 'error', 'message': f'Failed to start analysis: {str(e)}'}), 500
+        print(f"[/api/analyze] ERROR for scan {scan_id}: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        parent_dir = os.path.dirname(repo_path)
+        if os.path.exists(parent_dir):
+            print(f"[/api/analyze] Cleaning up directory: {parent_dir}")
+            shutil.rmtree(parent_dir, onerror=_remove_readonly_onerror)
 
 
 @main_bp.route('/api/generate-report', methods=['POST'])
 @login_required
 def generate_report():
-    data = request.get_json()
-    scan_id = data.get('scan_id')
-    report_type = data.get('report_type')
-    model_name = data.get('model_name', 'models/gemini-1.5-pro-latest') # Get model_name, with a default
-
-    user_token = session.get('google_access_token')
-    if not user_token:
-        return jsonify({'status': 'error', 'message': 'User token not found in session.'}), 401
-    
     try:
-        print(f"[/api/generate-report] Dispatching report generation task for Scan ID: {scan_id}, Type: {report_type}, Model: {model_name}")
-        task = generate_report_task.delay(scan_id, report_type, user_token, model_name)
-        return jsonify({'status': 'accepted', 'task_id': task.id, 'message': 'Report generation started in background.'}), 202
+        data = request.get_json()
+        scan_id = data.get('scan_id')
+        report_type = data.get('report_type')
+        model_name = data.get('model_name', 'models/gemini-2.5-pro-latest')
+
+        user_token = session.get('google_access_token')
+        if not user_token:
+            return jsonify({'status': 'error', 'message': 'User token not found in session.'}), 401
+        
+        print(f"[/api/generate-report] Scan ID: {scan_id}, Type: {report_type}, Model: {model_name}")
+        
+        report_service = ReportService()
+        report_path = report_service.generate_report(scan_id, report_type, user_token, model_name)
+        
+        return send_file(report_path, as_attachment=True)
     except Exception as e:
-        print(f"[/api/generate-report] ERROR dispatching report generation task: {str(e)}")
-        return jsonify({'status': 'error', 'message': f'Failed to start report generation: {str(e)}'}), 500
+        print(f"[/api/generate-report] ERROR: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 
 @main_bp.route('/api/auth/me', methods=['GET'])
 @login_required
@@ -149,7 +203,6 @@ def get_user_profile():
         return jsonify({"error": "ID token not found in session"}), 401
     
     id_token_str = session['google_id_token']
-    
     try:
         id_info = id_token.verify_oauth2_token(id_token_str, google_requests.Request())
         user_profile = {
@@ -160,6 +213,12 @@ def get_user_profile():
         return jsonify(user_profile)
     except ValueError as e:
         return jsonify({"error": "Invalid ID token", "message": str(e)}), 401
+
+
+@main_bp.route('/healthz')
+def health_check():
+    """Health check endpoint for Render."""
+    return jsonify({"status": "healthy"}), 200
 
 
 @main_bp.route('/api/models', methods=['GET'])
@@ -174,7 +233,6 @@ def list_models():
     gemini_key_env = os.environ.pop('GEMINI_API_KEY', None)
 
     try:
-        # Correctly create a Credentials object from the user's access token
         user_credentials = Credentials(token=user_token)
         genai.configure(credentials=user_credentials, api_key=None)
         
@@ -195,53 +253,3 @@ def list_models():
             os.environ['GOOGLE_API_KEY'] = api_key_env
         if gemini_key_env:
             os.environ['GEMINI_API_KEY'] = gemini_key_env
-
-
-@main_bp.route('/api/task_status/<task_id>', methods=['GET'])
-def get_task_status(task_id):
-    task = celery.AsyncResult(task_id)
-    if task.state == 'PENDING':
-        response = {
-            'state': task.state,
-            'status': 'Task is pending or has not started.'
-        }
-    elif task.state == 'PROGRESS':
-        response = {
-            'state': task.state,
-            'status': task.info.get('status', 'Task is running.'),
-            'progress': task.info.get('progress', 0)
-        }
-    elif task.state == 'SUCCESS':
-        response = {
-            'state': task.state,
-            'status': 'Task completed successfully.',
-            'result': task.result # This will be the return value of the task
-        }
-    elif task.state == 'FAILURE':
-        response = {
-            'state': task.state,
-            'status': 'Task failed.',
-            'error': str(task.info) # task.info contains the exception and traceback
-        }
-    else:
-        response = {
-            'state': task.state,
-            'status': 'Unknown task state.'
-        }
-        return jsonify(response)
-    
-    @main_bp.route('/api/download/<task_id>', methods=['GET'])
-    @login_required
-    def download_report(task_id):
-        task = celery.AsyncResult(task_id)
-        if task.state == 'SUCCESS':
-            result = task.result
-            if result and 'report_path' in result and os.path.exists(result['report_path']):
-                return send_file(result['report_path'], as_attachment=True)
-            else:
-                return jsonify({'error': 'Report file not found or path is missing.'}), 404
-        elif task.state == 'FAILURE':
-            return jsonify({'error': 'Task failed and did not produce a report.', 'details': str(task.info)}), 500
-        else:
-            return jsonify({'error': 'Task is not yet complete. Please wait.'}), 202
-    
