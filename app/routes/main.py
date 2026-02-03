@@ -10,7 +10,7 @@ from google.oauth2 import id_token
 from google.oauth2.credentials import Credentials
 from google.auth.transport import requests as google_requests
 import google.generativeai as genai
-
+import psycopg2
 from app.services.github_service import GitHubService
 from app.services.analysis_service import AnalysisService
 from app.services.report_service import ReportService
