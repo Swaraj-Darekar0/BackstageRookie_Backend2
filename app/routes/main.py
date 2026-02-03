@@ -198,11 +198,12 @@ def generate_report():
 @main_bp.route('/api/auth/me', methods=['GET'])
 @login_required
 def get_user_profile():
-    """Get user profile from ID token"""
+    """Get user profile from ID token and save/update to Supabase."""
     if 'google_id_token' not in session:
         return jsonify({"error": "ID token not found in session"}), 401
     
     id_token_str = session['google_id_token']
+    
     try:
         id_info = id_token.verify_oauth2_token(id_token_str, google_requests.Request())
         user_profile = {
@@ -210,9 +211,53 @@ def get_user_profile():
             'email': id_info.get('email'),
             'picture': id_info.get('picture')
         }
+
+        # --- NEW: Save user to Supabase ---
+        try:
+            db_url = os.environ.get("SUPABASE_DB_URL")
+            print(f"[/api/auth/me] SUPABASE_DB_URL (raw): {db_url}")  # Debug log
+            if db_url:
+                # Normalize common misconfigurations:
+                # - remove surrounding quotes
+                # - handle values like "DATABASE_URL=postgresql://..." by extracting after '='
+                db_url_clean = db_url.strip().strip('"').strip("'")
+                if db_url_clean.upper().startswith('DATABASE_URL='):
+                    db_url_clean = db_url_clean.split('=', 1)[1]
+
+                try:
+                    conn = psycopg2.connect(db_url_clean)
+                    cur = conn.cursor()
+
+                    # Use UPSERT logic: Insert a new user, or update their name if the email already exists.
+                    cur.execute(
+                        """
+                        INSERT INTO users (email, name)
+                        VALUES (%s, %s)
+                        ON CONFLICT (email)
+                        DO UPDATE SET name = EXCLUDED.name;
+                        """,
+                        (user_profile['email'], user_profile['name'])
+                    )
+
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+                    print(f"[/api/auth/me] Successfully saved/updated user {user_profile['email']} to database.")
+                except Exception as db_error:
+                    # Log the error but don't fail the login request
+                    print(f"[/api/auth/me] ERROR: Could not save user to database. Sanitized SUPABASE_DB_URL: {db_url_clean}. Error: {str(db_error)}")
+            else:
+                print("[/api/auth/me] WARNING: SUPABASE_DB_URL environment variable not set. Skipping database operation.")
+
+        except Exception as db_error:
+            # Catch any unexpected exceptions during env read/sanitize
+            print(f"[/api/auth/me] ERROR: Unexpected error when handling SUPABASE_DB_URL: {str(db_error)}")
+        # --- END NEW ---
+
         return jsonify(user_profile)
     except ValueError as e:
         return jsonify({"error": "Invalid ID token", "message": str(e)}), 401
+
 
 
 @main_bp.route('/healthz')
