@@ -12,3 +12,4 @@ pypandoc
 google-auth-oauthlib
 google-auth-httplib2
 gunicorn
+psycopg2-binary
